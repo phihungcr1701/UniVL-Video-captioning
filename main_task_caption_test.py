@@ -105,15 +105,15 @@ def get_args(description='UniVL on Caption Task - Test Visual Encoder'):
     parser.add_argument('--decoder_num_hidden_layers', type=int, default=3, help="Layer NO. of decoder.")
 
     parser.add_argument('--stage_two', action='store_true', help="Whether training with decoder.")
-    
+
     # Arguments for testing with zero/fake video features
-    parser.add_argument('--use_zero_features', action='store_true', 
+    parser.add_argument('--use_zero_features', action='store_true',
                         help="Use zero/fake video features instead of loading from pickle file")
     parser.add_argument('--fake_video_type', type=str, default='zeros', choices=['zeros', 'random', 'gaussian'],
                         help="Type of fake video features: zeros, random (uniform), or gaussian (only when --use_zero_features is set)")
     parser.add_argument('--random_seed_video', type=int, default=42,
                         help="Random seed for generating fake video features (set to -1 for different each time)")
-    
+
     args = parser.parse_args()
 
     # Handle LOCAL_RANK environment variable for PyTorch 2.x compatibility (torchrun)
@@ -189,16 +189,16 @@ def init_model(args, device, n_gpu, local_rank):
     - All modules will be trained (no freezing)
     """
     global logger
-    
+
     if args.init_model:
         # Load pretrained weights
         model_state_dict = torch.load(args.init_model, map_location='cpu')
-        
+
         # Remove visual encoder weights from state_dict
         visual_keys_to_remove = [key for key in model_state_dict.keys() if key.startswith('visual.')]
         for key in visual_keys_to_remove:
             del model_state_dict[key]
-        
+
         if args.local_rank == 0:
             logger.info("="*80)
             logger.info("🔧 MODIFIED MODEL INITIALIZATION")
@@ -219,19 +219,19 @@ def init_model(args, device, n_gpu, local_rank):
                                    cache_dir=cache_dir, state_dict=model_state_dict, task_config=args)
 
     model.to(device)
-    
+
     if args.local_rank == 0:
         # Count parameters for each module
         total_params = sum(p.numel() for p in model.parameters())
         bert_params = sum(p.numel() for p in model.bert.parameters())
         visual_params = sum(p.numel() for p in model.visual.parameters())
         cross_params = sum(p.numel() for p in model.cross.parameters())
-        
+
         # Decoder might be named differently depending on stage
         decoder_params = 0
         if hasattr(model, 'decoder') and hasattr(model.decoder, 'parameters'):
             decoder_params = sum(p.numel() for p in model.decoder.parameters())
-        
+
         logger.info("📊 Model Parameters:")
         logger.info(f"  Total: {total_params:,} ({total_params/1e6:.2f}M)")
         logger.info(f"  BERT: {bert_params:,} ({bert_params/1e6:.2f}M) - Pretrained ✓")
@@ -289,16 +289,16 @@ class FakeVideoDataLoader:
         self.max_frames = max_frames
         self.fake_type = fake_type
         self.random_seed = random_seed
-        
+
         # Set random seed for reproducibility
         if random_seed >= 0:
             self.rng = np.random.RandomState(random_seed)
         else:
             self.rng = np.random.RandomState()
-    
+
     def __len__(self):
         return len(self.original_dataloader)
-    
+
     def __iter__(self):
         for batch in self.original_dataloader:
             # batch is tuple: (input_ids, input_mask, segment_ids, video, video_mask, ...)
@@ -306,7 +306,7 @@ class FakeVideoDataLoader:
             batch_list = list(batch)
             original_video = batch_list[3]  # [B, max_frames, video_dim]
             batch_size, num_frames, feat_dim = original_video.shape
-            
+
             # Generate fake video features based on type
             if self.fake_type == 'zeros':
                 fake_video = torch.zeros_like(original_video)
@@ -320,7 +320,7 @@ class FakeVideoDataLoader:
                 ).float()
             else:
                 raise ValueError(f"Unknown fake_type: {self.fake_type}")
-            
+
             batch_list[3] = fake_video
             yield tuple(batch_list)
 
@@ -346,7 +346,7 @@ def dataloader_youcook_train(args, tokenizer):
         sampler=train_sampler,
         drop_last=True,
     )
-    
+
     # Wrap with fake video generator if flag is set
     if args.use_zero_features:
         dataloader = FakeVideoDataLoader(
@@ -378,7 +378,7 @@ def dataloader_youcook_test(args, tokenizer):
         num_workers=args.num_thread_reader,
         pin_memory=False,
     )
-    
+
     # Wrap with fake video generator if flag is set
     if args.use_zero_features:
         dataloader_youcook = FakeVideoDataLoader(
@@ -415,7 +415,7 @@ def dataloader_msrvtt_train(args, tokenizer):
         sampler=train_sampler,
         drop_last=True,
     )
-    
+
     # Wrap with fake video generator if flag is set
     if args.use_zero_features:
         dataloader = FakeVideoDataLoader(
@@ -449,7 +449,7 @@ def dataloader_msrvtt_test(args, tokenizer, split_type="val",):
         pin_memory=False,
         drop_last=False,
     )
-    
+
     # Wrap with fake video generator if flag is set
     if args.use_zero_features:
         dataloader_msrvtt = FakeVideoDataLoader(
@@ -459,7 +459,7 @@ def dataloader_msrvtt_test(args, tokenizer, split_type="val",):
             fake_type=args.fake_video_type,
             random_seed=args.random_seed_video
         )
-    
+
     return dataloader_msrvtt, len(msrvtt_testset)
 
 def convert_state_dict_type(state_dict, ttype=torch.FloatTensor):
@@ -657,34 +657,34 @@ def collect_hypothesis_and_scores(inst_dec_beams, n_best):
 
 class PyCOCOEvalCapWrapper:
     """Wrapper class for pycocoevalcap to provide NLGEval-compatible interface"""
-    
+
     def __init__(self):
         if not PYCOCOEVALCAP_AVAILABLE:
             raise ImportError("pycocoevalcap is not available. Install with: pip install git+https://github.com/salaniz/pycocoevalcap.git")
-        
+
         self.scorers = [
             (Bleu(4), ["Bleu_1", "Bleu_2", "Bleu_3", "Bleu_4"]),
             (Meteor(), "METEOR"),
             (Rouge(), "ROUGE_L"),
             (Cider(), "CIDEr")
         ]
-    
+
     def compute_metrics(self, ref_list, hyp_list):
         """
         Compute caption metrics using pycocoevalcap
-        
+
         Args:
             ref_list: List of reference captions. For MSRVTT, it's list of lists.
                      For YoucookII, it's a single list wrapped in another list.
             hyp_list: List of hypothesis (predicted) captions
-        
+
         Returns:
             dict: Dictionary with keys Bleu_1, Bleu_2, Bleu_3, Bleu_4, METEOR, ROUGE_L, CIDEr
         """
         # Convert to COCO format: {id: [captions]}
         gts = {}  # ground truths
         res = {}  # predictions
-        
+
         # Handle different ref_list formats
         if isinstance(ref_list[0], list):
             # Multiple references per sample (e.g., MSRVTT with 20 refs per video)
@@ -696,7 +696,7 @@ class PyCOCOEvalCapWrapper:
             for i, (ref, hyp) in enumerate(zip(ref_list, hyp_list)):
                 gts[i] = [ref] if isinstance(ref, str) else ref
                 res[i] = [hyp]
-        
+
         # Compute scores
         output = {}
         for scorer, method in self.scorers:
@@ -707,7 +707,7 @@ class PyCOCOEvalCapWrapper:
                     output[m] = s
             else:
                 output[method] = score
-        
+
         return output
 
 def eval_epoch(args, model, test_dataloader, tokenizer, device, n_gpu, nlgEvalObj=None, test_set=None):
@@ -740,7 +740,7 @@ def eval_epoch(args, model, test_dataloader, tokenizer, device, n_gpu, nlgEvalOb
                 if n_gpu > 1:
                     loss = loss.mean()
                 total_loss += float(loss)
-            
+
             sequence_output, visual_output = model.get_sequence_visual_output(input_ids, segment_ids, input_mask, video, video_mask)
             # -- Repeat data for beam search
             n_bm = 5 # beam_size
@@ -845,7 +845,7 @@ def eval_epoch(args, model, test_dataloader, tokenizer, device, n_gpu, nlgEvalOb
 
     # Calculate average validation loss
     avg_val_loss = total_loss / len(test_dataloader)
-    
+
     # Evaluate
     if nlgEvalObj is not None:
         metrics_nlg = nlgEvalObj.compute_metrics(ref_list=all_caption_lists, hyp_list=all_result_lists)
@@ -858,7 +858,7 @@ def eval_epoch(args, model, test_dataloader, tokenizer, device, n_gpu, nlgEvalOb
         logger.warning("Evaluation metrics skipped (pycocoevalcap not available)")
         logger.info(">>>  Val Loss: {:.4f}".format(avg_val_loss))
         Bleu_4 = 0.0
-    
+
     return avg_val_loss, Bleu_4
 
 DATALOADER_DICT = {}
