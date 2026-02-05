@@ -105,6 +105,15 @@ def get_args(description='UniVL on Caption Task - Test Visual Encoder'):
     parser.add_argument('--decoder_num_hidden_layers', type=int, default=3, help="Layer NO. of decoder.")
 
     parser.add_argument('--stage_two', action='store_true', help="Whether training with decoder.")
+    
+    # Arguments for testing with zero/fake video features
+    parser.add_argument('--use_zero_features', action='store_true', 
+                        help="Use zero/fake video features instead of loading from pickle file")
+    parser.add_argument('--fake_video_type', type=str, default='zeros', choices=['zeros', 'random', 'gaussian'],
+                        help="Type of fake video features: zeros, random (uniform), or gaussian (only when --use_zero_features is set)")
+    parser.add_argument('--random_seed_video', type=int, default=42,
+                        help="Random seed for generating fake video features (set to -1 for different each time)")
+    
     args = parser.parse_args()
 
     # Handle LOCAL_RANK environment variable for PyTorch 2.x compatibility (torchrun)
@@ -144,6 +153,13 @@ def set_seed_logger(args):
     logger = get_logger(os.path.join(args.output_dir, "log.txt"))
 
     if args.local_rank == 0:
+        if args.use_zero_features:
+            logger.info("="*80)
+            logger.info("⚠️  EXPERIMENT: USING ZERO/FAKE VIDEO FEATURES")
+            logger.info("="*80)
+            logger.info(f"  Fake video type: {args.fake_video_type}")
+            logger.info(f"  Random seed for video: {args.random_seed_video}")
+            logger.info("="*80)
         logger.info("Effective parameters:")
         for key in sorted(args.__dict__):
             logger.info("  <<< {}: {}".format(key, args.__dict__[key]))
@@ -261,6 +277,54 @@ def prep_optimizer(args, model, num_train_optimization_steps, device, n_gpu, loc
 
     return optimizer, scheduler, model
 
+
+class FakeVideoDataLoader:
+    """
+    Wrapper for original dataloader that replaces video features with fake ones.
+    Used for testing the model with zero vectors or random features instead of real video features.
+    """
+    def __init__(self, original_dataloader, video_dim, max_frames, fake_type='zeros', random_seed=42):
+        self.original_dataloader = original_dataloader
+        self.video_dim = video_dim
+        self.max_frames = max_frames
+        self.fake_type = fake_type
+        self.random_seed = random_seed
+        
+        # Set random seed for reproducibility
+        if random_seed >= 0:
+            self.rng = np.random.RandomState(random_seed)
+        else:
+            self.rng = np.random.RandomState()
+    
+    def __len__(self):
+        return len(self.original_dataloader)
+    
+    def __iter__(self):
+        for batch in self.original_dataloader:
+            # batch is tuple: (input_ids, input_mask, segment_ids, video, video_mask, ...)
+            # Replace video (index 3) with fake features
+            batch_list = list(batch)
+            original_video = batch_list[3]  # [B, max_frames, video_dim]
+            batch_size, num_frames, feat_dim = original_video.shape
+            
+            # Generate fake video features based on type
+            if self.fake_type == 'zeros':
+                fake_video = torch.zeros_like(original_video)
+            elif self.fake_type == 'random':
+                fake_video = torch.from_numpy(
+                    self.rng.uniform(0, 1, size=(batch_size, num_frames, feat_dim))
+                ).float()
+            elif self.fake_type == 'gaussian':
+                fake_video = torch.from_numpy(
+                    self.rng.normal(0, 1, size=(batch_size, num_frames, feat_dim))
+                ).float()
+            else:
+                raise ValueError(f"Unknown fake_type: {self.fake_type}")
+            
+            batch_list[3] = fake_video
+            yield tuple(batch_list)
+
+
 def dataloader_youcook_train(args, tokenizer):
     youcook_dataset = Youcook_Caption_DataLoader(
         csv=args.train_csv,
@@ -282,6 +346,16 @@ def dataloader_youcook_train(args, tokenizer):
         sampler=train_sampler,
         drop_last=True,
     )
+    
+    # Wrap with fake video generator if flag is set
+    if args.use_zero_features:
+        dataloader = FakeVideoDataLoader(
+            dataloader,
+            video_dim=args.video_dim,
+            max_frames=args.max_frames,
+            fake_type=args.fake_video_type,
+            random_seed=args.random_seed_video
+        )
 
     return dataloader, len(youcook_dataset), train_sampler
 
@@ -304,6 +378,16 @@ def dataloader_youcook_test(args, tokenizer):
         num_workers=args.num_thread_reader,
         pin_memory=False,
     )
+    
+    # Wrap with fake video generator if flag is set
+    if args.use_zero_features:
+        dataloader_youcook = FakeVideoDataLoader(
+            dataloader_youcook,
+            video_dim=args.video_dim,
+            max_frames=args.max_frames,
+            fake_type=args.fake_video_type,
+            random_seed=args.random_seed_video
+        )
 
     if args.local_rank == 0:
         logger.info('YoucookII validation pairs: {}'.format(len(youcook_testset)))
@@ -331,6 +415,16 @@ def dataloader_msrvtt_train(args, tokenizer):
         sampler=train_sampler,
         drop_last=True,
     )
+    
+    # Wrap with fake video generator if flag is set
+    if args.use_zero_features:
+        dataloader = FakeVideoDataLoader(
+            dataloader,
+            video_dim=args.video_dim,
+            max_frames=args.max_frames,
+            fake_type=args.fake_video_type,
+            random_seed=args.random_seed_video
+        )
 
     return dataloader, len(msrvtt_dataset), train_sampler
 
@@ -355,6 +449,17 @@ def dataloader_msrvtt_test(args, tokenizer, split_type="val",):
         pin_memory=False,
         drop_last=False,
     )
+    
+    # Wrap with fake video generator if flag is set
+    if args.use_zero_features:
+        dataloader_msrvtt = FakeVideoDataLoader(
+            dataloader_msrvtt,
+            video_dim=args.video_dim,
+            max_frames=args.max_frames,
+            fake_type=args.fake_video_type,
+            random_seed=args.random_seed_video
+        )
+    
     return dataloader_msrvtt, len(msrvtt_testset)
 
 def convert_state_dict_type(state_dict, ttype=torch.FloatTensor):
