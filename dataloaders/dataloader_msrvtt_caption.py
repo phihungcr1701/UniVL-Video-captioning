@@ -23,17 +23,25 @@ class MSRVTT_Caption_DataLoader(Dataset):
             max_words=30,
             feature_framerate=1.0,
             max_frames=100,
-            split_type=""
+            split_type="",
+            use_zero_features=False,
+            feature_dim=1024
     ):
         self.csv = pd.read_csv(csv_path)
         self.data = json.load(open(json_path, 'r'))
-        self.feature_dict = pickle.load(open(features_path, 'rb'))
+        self.use_zero_features = use_zero_features
+        
+        if not use_zero_features:
+            self.feature_dict = pickle.load(open(features_path, 'rb'))
+            self.feature_size = self.feature_dict[self.csv['video_id'].values[0]].shape[-1]
+        else:
+            self.feature_dict = None
+            self.feature_size = feature_dim
+            
         self.feature_framerate = feature_framerate
         self.max_words = max_words
         self.max_frames = max_frames
         self.tokenizer = tokenizer
-
-        self.feature_size = self.feature_dict[self.csv['video_id'].values[0]].shape[-1]
 
         assert split_type in ["train", "val", "test"]
         # Train: video0 : video6512 (6513)
@@ -178,18 +186,27 @@ class MSRVTT_Caption_DataLoader(Dataset):
         max_video_length = [0] * len(choice_video_ids)
 
         video = np.zeros((len(choice_video_ids), self.max_frames, self.feature_size), dtype=np.float32)
-        for i, video_id in enumerate(choice_video_ids):
-            video_slice = self.feature_dict[video_id]
+        
+        if self.use_zero_features:
+            # Use zero vectors instead of loading from pickle
+            for i, video_id in enumerate(choice_video_ids):
+                # Set a fixed number of frames (e.g., max_frames) for zero features
+                max_video_length[i] = self.max_frames
+                # video array is already initialized with zeros, so we don't need to do anything
+        else:
+            # Load features from pickle file
+            for i, video_id in enumerate(choice_video_ids):
+                video_slice = self.feature_dict[video_id]
 
-            if self.max_frames < video_slice.shape[0]:
-                video_slice = video_slice[:self.max_frames]
+                if self.max_frames < video_slice.shape[0]:
+                    video_slice = video_slice[:self.max_frames]
 
-            slice_shape = video_slice.shape
-            max_video_length[i] = max_video_length[i] if max_video_length[i] > slice_shape[0] else slice_shape[0]
-            if len(video_slice) < 1:
-                print("video_id: {}".format(video_id))
-            else:
-                video[i][:slice_shape[0]] = video_slice
+                slice_shape = video_slice.shape
+                max_video_length[i] = max_video_length[i] if max_video_length[i] > slice_shape[0] else slice_shape[0]
+                if len(video_slice) < 1:
+                    print("video_id: {}".format(video_id))
+                else:
+                    video[i][:slice_shape[0]] = video_slice
 
         for i, v_length in enumerate(max_video_length):
             video_mask[i][:v_length] = [1] * v_length

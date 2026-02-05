@@ -48,6 +48,8 @@ def get_args(description='UniVL on Caption Task - Test Visual Encoder'):
                         help='caption and transcription pickle file path')
     parser.add_argument('--features_path', type=str, default='data/youcookii_videos_feature.pickle',
                         help='feature path for 2D features')
+    parser.add_argument('--use_zero_features', action='store_true',
+                        help='Use zero vectors instead of loading features from pickle file')
 
     parser.add_argument('--num_thread_reader', type=int, default=1, help='')
     parser.add_argument('--lr', type=float, default=0.0001, help='initial learning rate')
@@ -270,6 +272,8 @@ def dataloader_youcook_train(args, tokenizer):
         feature_framerate=args.feature_framerate,
         tokenizer=tokenizer,
         max_frames=args.max_frames,
+        use_zero_features=args.use_zero_features,
+        feature_dim=args.video_dim
     )
 
     train_sampler = torch.utils.data.distributed.DistributedSampler(youcook_dataset)
@@ -294,6 +298,8 @@ def dataloader_youcook_test(args, tokenizer):
         feature_framerate=args.feature_framerate,
         tokenizer=tokenizer,
         max_frames=args.max_frames,
+        use_zero_features=args.use_zero_features,
+        feature_dim=args.video_dim
     )
 
     test_sampler = SequentialSampler(youcook_testset)
@@ -319,6 +325,8 @@ def dataloader_msrvtt_train(args, tokenizer):
         tokenizer=tokenizer,
         max_frames=args.max_frames,
         split_type="train",
+        use_zero_features=args.use_zero_features,
+        feature_dim=args.video_dim
     )
 
     train_sampler = torch.utils.data.distributed.DistributedSampler(msrvtt_dataset)
@@ -344,6 +352,8 @@ def dataloader_msrvtt_test(args, tokenizer, split_type="val",):
         tokenizer=tokenizer,
         max_frames=args.max_frames,
         split_type=split_type,
+        use_zero_features=args.use_zero_features,
+        feature_dim=args.video_dim
     )
 
     test_sampler = SequentialSampler(msrvtt_testset)
