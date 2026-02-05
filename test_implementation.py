@@ -31,7 +31,7 @@ def test_msrvtt_dataloader_signature():
             return False
     
     # Check default values
-    if sig.parameters['use_zero_features'].default == False:
+    if sig.parameters['use_zero_features'].default is False:
         print(f"  ✓ 'use_zero_features' has correct default value: False")
     else:
         print(f"  ✗ 'use_zero_features' has incorrect default value")
@@ -65,7 +65,7 @@ def test_youcook_dataloader_signature():
             return False
     
     # Check default values
-    if sig.parameters['use_zero_features'].default == False:
+    if sig.parameters['use_zero_features'].default is False:
         print(f"  ✓ 'use_zero_features' has correct default value: False")
     else:
         print(f"  ✗ 'use_zero_features' has incorrect default value")

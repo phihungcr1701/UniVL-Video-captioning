@@ -175,14 +175,17 @@ class Youcook_Caption_DataLoader(Dataset):
         max_video_length = [0] * len(s)
 
         video = np.zeros((len(s), self.max_frames, self.feature_size), dtype=np.float)
-        video_features = self.feature_dict[self.csv["feature_file"].values[idx]]
+        
+        if not self.use_zero_features:
+            # Only load video_features when not using zero features
+            video_features = self.feature_dict[self.csv["feature_file"].values[idx]]
         
         for i in range(len(s)):
             start = int(s[i] * self.feature_framerate)
             end = int(e[i] * self.feature_framerate) + 1
             
             if self.use_zero_features:
-                # Get video length but use zero features
+                # Calculate video length but use zero features
                 # This maintains realistic temporal structure with zero feature values
                 video_slice_length = min(end - start, self.max_frames)
                 max_video_length[i] = video_slice_length
