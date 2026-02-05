@@ -33,12 +33,10 @@ class Youcook_Caption_DataLoader(Dataset):
         self.data_dict = pickle.load(open(data_path, 'rb'))
         self.use_zero_features = use_zero_features
         
-        if not use_zero_features:
-            self.feature_dict = pickle.load(open(features_path, 'rb'))
-            self.feature_size = self.feature_dict[self.csv["feature_file"].values[0]].shape[-1]
-        else:
-            self.feature_dict = None
-            self.feature_size = feature_dim
+        # Always load feature_dict to get video lengths and metadata
+        # When use_zero_features=True, we'll use the shapes but replace values with zeros
+        self.feature_dict = pickle.load(open(features_path, 'rb'))
+        self.feature_size = feature_dim if use_zero_features else self.feature_dict[self.csv["feature_file"].values[0]].shape[-1]
             
         self.feature_framerate = feature_framerate
         self.max_words = max_words
@@ -177,19 +175,20 @@ class Youcook_Caption_DataLoader(Dataset):
         max_video_length = [0] * len(s)
 
         video = np.zeros((len(s), self.max_frames, self.feature_size), dtype=np.float)
+        video_features = self.feature_dict[self.csv["feature_file"].values[idx]]
         
-        if self.use_zero_features:
-            # Use zero vectors instead of loading from pickle
-            for i in range(len(s)):
-                # Set a fixed number of frames for zero features
-                max_video_length[i] = self.max_frames
-                # video array is already initialized with zeros, so we don't need to do anything
-        else:
-            # Load features from pickle file
-            video_features = self.feature_dict[self.csv["feature_file"].values[idx]]
-            for i in range(len(s)):
-                start = int(s[i] * self.feature_framerate)
-                end = int(e[i] * self.feature_framerate) + 1
+        for i in range(len(s)):
+            start = int(s[i] * self.feature_framerate)
+            end = int(e[i] * self.feature_framerate) + 1
+            
+            if self.use_zero_features:
+                # Get video length but use zero features
+                # This maintains realistic temporal structure with zero feature values
+                video_slice_length = min(end - start, self.max_frames)
+                max_video_length[i] = video_slice_length
+                # video[i] is already zeros, so we don't need to fill it
+            else:
+                # Load actual features from pickle file
                 video_slice = video_features[start:end]
 
                 if self.max_frames < video_slice.shape[0]:

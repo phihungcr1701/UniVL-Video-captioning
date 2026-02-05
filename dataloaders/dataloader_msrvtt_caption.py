@@ -31,12 +31,10 @@ class MSRVTT_Caption_DataLoader(Dataset):
         self.data = json.load(open(json_path, 'r'))
         self.use_zero_features = use_zero_features
         
-        if not use_zero_features:
-            self.feature_dict = pickle.load(open(features_path, 'rb'))
-            self.feature_size = self.feature_dict[self.csv['video_id'].values[0]].shape[-1]
-        else:
-            self.feature_dict = None
-            self.feature_size = feature_dim
+        # Always load feature_dict to get video lengths and metadata
+        # When use_zero_features=True, we'll use the shapes but replace values with zeros
+        self.feature_dict = pickle.load(open(features_path, 'rb'))
+        self.feature_size = feature_dim if use_zero_features else self.feature_dict[self.csv['video_id'].values[0]].shape[-1]
             
         self.feature_framerate = feature_framerate
         self.max_words = max_words
@@ -187,15 +185,18 @@ class MSRVTT_Caption_DataLoader(Dataset):
 
         video = np.zeros((len(choice_video_ids), self.max_frames, self.feature_size), dtype=np.float32)
         
-        if self.use_zero_features:
-            # Use zero vectors instead of loading from pickle
-            for i, video_id in enumerate(choice_video_ids):
-                # Set a fixed number of frames (e.g., max_frames) for zero features
-                max_video_length[i] = self.max_frames
-                # video array is already initialized with zeros, so we don't need to do anything
-        else:
-            # Load features from pickle file
-            for i, video_id in enumerate(choice_video_ids):
+        for i, video_id in enumerate(choice_video_ids):
+            if self.use_zero_features:
+                # Get video length from feature_dict but use zero features
+                # This maintains realistic temporal structure with zero feature values
+                video_slice_shape = self.feature_dict[video_id].shape
+                actual_length = video_slice_shape[0]
+                if self.max_frames < actual_length:
+                    actual_length = self.max_frames
+                max_video_length[i] = actual_length
+                # video[i] is already zeros, so we don't need to fill it
+            else:
+                # Load actual features from pickle file
                 video_slice = self.feature_dict[video_id]
 
                 if self.max_frames < video_slice.shape[0]:

@@ -95,19 +95,20 @@ def test_msrvtt_dataloader_logic():
         print("  ✗ Instance variable 'use_zero_features' is NOT set")
         return False
     
-    if 'if not use_zero_features:' in source or 'if use_zero_features:' in source:
-        print("  ✓ Conditional logic for 'use_zero_features' found")
+    # Check that feature_dict is always loaded
+    if 'self.feature_dict = pickle.load' in source:
+        print("  ✓ feature_dict is loaded (required for video length metadata)")
     else:
-        print("  ✗ Conditional logic for 'use_zero_features' NOT found")
+        print("  ✗ feature_dict is NOT loaded")
         return False
     
     # Check _get_video method
     get_video_source = inspect.getsource(MSRVTT_Caption_DataLoader._get_video)
     
     if 'if self.use_zero_features:' in get_video_source:
-        print("  ✓ Zero features logic in _get_video method found")
+        print("  ✓ Zero features conditional logic in _get_video method found")
     else:
-        print("  ✗ Zero features logic in _get_video method NOT found")
+        print("  ✗ Zero features conditional logic in _get_video method NOT found")
         return False
     
     return True
@@ -128,19 +129,20 @@ def test_youcook_dataloader_logic():
         print("  ✗ Instance variable 'use_zero_features' is NOT set")
         return False
     
-    if 'if not use_zero_features:' in source or 'if use_zero_features:' in source:
-        print("  ✓ Conditional logic for 'use_zero_features' found")
+    # Check that feature_dict is always loaded
+    if 'self.feature_dict = pickle.load' in source:
+        print("  ✓ feature_dict is loaded (required for video length metadata)")
     else:
-        print("  ✗ Conditional logic for 'use_zero_features' NOT found")
+        print("  ✗ feature_dict is NOT loaded")
         return False
     
     # Check _get_video method
     get_video_source = inspect.getsource(Youcook_Caption_DataLoader._get_video)
     
     if 'if self.use_zero_features:' in get_video_source:
-        print("  ✓ Zero features logic in _get_video method found")
+        print("  ✓ Zero features conditional logic in _get_video method found")
     else:
-        print("  ✗ Zero features logic in _get_video method NOT found")
+        print("  ✗ Zero features conditional logic in _get_video method NOT found")
         return False
     
     return True

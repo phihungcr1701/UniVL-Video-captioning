@@ -1,14 +1,14 @@
 # Using Zero Features for Testing
 
 ## Overview
-The training script `main_task_caption_test.py` now supports testing with zero vectors instead of loading video features from a pickle file. This is useful for testing the model's behavior when visual information is absent.
+The training script `main_task_caption_test.py` now supports testing with zero vectors instead of using actual video features. This is useful for ablation studies to understand the model's behavior when visual information is replaced with zeros while maintaining realistic temporal structure.
 
 ## Usage
 
 To use zero features, simply add the `--use_zero_features` flag to your training command:
 
 ```bash
-# Original command (loads features from pickle file)
+# Original command (loads actual features from pickle file)
 torchrun --nproc_per_node=1 --standalone \
 main_task_caption_test.py \
 --do_train --num_thread_reader=4 \
@@ -44,18 +44,25 @@ main_task_caption_test.py \
 --use_zero_features
 ```
 
-## What Changes When Using Zero Features
+## How It Works
 
 When `--use_zero_features` is enabled:
 
-1. **Feature Loading**: The pickle file specified in `--features_path` is **not loaded**, saving memory
-2. **Feature Vectors**: All video features are replaced with zero vectors of shape `(max_frames, video_dim)`
+1. **Feature Loading**: The pickle file specified in `--features_path` **is still loaded** to extract metadata (video lengths, temporal information)
+2. **Feature Values**: All video feature values are replaced with zeros, but the temporal structure (video length, frame count) is preserved from the original data
 3. **Feature Dimension**: Uses the dimension specified by `--video_dim` (default: 1024)
-4. **Frame Count**: All videos are treated as having `max_frames` frames
+4. **Video Masks**: Masks are generated based on actual video lengths, ensuring realistic temporal attention patterns
+
+This approach allows for proper ablation studies where:
+- The model architecture remains unchanged
+- Temporal structures and video lengths are realistic
+- Only the feature values themselves are zeroed out
+- The model can learn purely from text without visual information
 
 ## Notes
 
-- The `--features_path` argument is still required but will be ignored when `--use_zero_features` is set
+- The `--features_path` argument is **required** even when using `--use_zero_features` because the pickle file contains metadata about video lengths
 - This feature works with both MSRVTT and YouCook datasets
 - Useful for ablation studies to understand the importance of visual features
-- Can help debug model architecture issues without needing actual video features
+- Can help debug model architecture issues or test text-only performance
+- Memory usage is similar to normal mode since the pickle file is still loaded (only feature values are replaced with zeros)
