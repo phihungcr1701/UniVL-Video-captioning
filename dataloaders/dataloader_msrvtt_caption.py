@@ -34,7 +34,15 @@ class MSRVTT_Caption_DataLoader(Dataset):
         # Always load feature_dict to get video lengths and metadata
         # When use_zero_features=True, we'll use the shapes but replace values with zeros
         self.feature_dict = pickle.load(open(features_path, 'rb'))
-        self.feature_size = feature_dim if use_zero_features else self.feature_dict[self.csv['video_id'].values[0]].shape[-1]
+        
+        if use_zero_features:
+            # Validate that feature_dim matches actual dimension
+            actual_dim = self.feature_dict[self.csv['video_id'].values[0]].shape[-1]
+            if feature_dim != actual_dim:
+                print(f"Warning: feature_dim ({feature_dim}) differs from actual feature dimension ({actual_dim}). Using feature_dim={feature_dim} for zero features.")
+            self.feature_size = feature_dim
+        else:
+            self.feature_size = self.feature_dict[self.csv['video_id'].values[0]].shape[-1]
             
         self.feature_framerate = feature_framerate
         self.max_words = max_words

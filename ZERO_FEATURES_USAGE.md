@@ -63,6 +63,7 @@ This approach allows for proper ablation studies where:
 
 - The `--features_path` argument is **required** even when using `--use_zero_features` because the pickle file contains metadata about video lengths
 - This feature works with both MSRVTT and YouCook datasets
+- **Memory optimization**: For YouCook dataset, actual video features are not loaded when using zero mode, only metadata is extracted
+- **MSRVTT note**: For MSRVTT dataset, the pickle file is fully loaded to extract video length information
 - Useful for ablation studies to understand the importance of visual features
 - Can help debug model architecture issues or test text-only performance
-- Memory usage is similar to normal mode since the pickle file is still loaded (only feature values are replaced with zeros)
