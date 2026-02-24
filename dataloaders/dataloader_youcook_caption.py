@@ -60,15 +60,15 @@ class Youcook_Caption_DataLoader(Dataset):
 
         starts = np.zeros(k)
         ends = np.zeros(k)
-        pairs_text = np.zeros((k, self.max_words), dtype=np.long)
-        pairs_mask = np.zeros((k, self.max_words), dtype=np.long)
-        pairs_segment = np.zeros((k, self.max_words), dtype=np.long)
-        pairs_masked_text = np.zeros((k, self.max_words), dtype=np.long)
-        pairs_token_labels = np.zeros((k, self.max_words), dtype=np.long)
+        pairs_text = np.zeros((k, self.max_words), dtype=np.int64)
+        pairs_mask = np.zeros((k, self.max_words), dtype=np.int64)
+        pairs_segment = np.zeros((k, self.max_words), dtype=np.int64)
+        pairs_masked_text = np.zeros((k, self.max_words), dtype=np.int64)
+        pairs_token_labels = np.zeros((k, self.max_words), dtype=np.int64)
 
-        pairs_input_caption_ids = np.zeros((k, self.max_words), dtype=np.long)
-        pairs_output_caption_ids = np.zeros((k, self.max_words), dtype=np.long)
-        pairs_decoder_mask = np.zeros((k, self.max_words), dtype=np.long)
+        pairs_input_caption_ids = np.zeros((k, self.max_words), dtype=np.int64)
+        pairs_output_caption_ids = np.zeros((k, self.max_words), dtype=np.int64)
+        pairs_decoder_mask = np.zeros((k, self.max_words), dtype=np.int64)
 
         for i in range(k):
             ind = r_ind[i]
@@ -165,11 +165,11 @@ class Youcook_Caption_DataLoader(Dataset):
                pairs_input_caption_ids, pairs_decoder_mask, pairs_output_caption_ids, starts, ends
 
     def _get_video(self, idx, s, e):
-        video_mask = np.zeros((len(s), self.max_frames), dtype=np.long)
+        video_mask = np.zeros((len(s), self.max_frames), dtype=np.int64)
         max_video_length = [0] * len(s)
 
         video_features = self.feature_dict[self.csv["feature_file"].values[idx]]
-        video = np.zeros((len(s), self.max_frames, self.feature_size), dtype=np.float)
+        video = np.zeros((len(s), self.max_frames, self.feature_size), dtype=np.float64)
         for i in range(len(s)):
             start = int(s[i] * self.feature_framerate)
             end = int(e[i] * self.feature_framerate) + 1
@@ -204,7 +204,7 @@ class Youcook_Caption_DataLoader(Dataset):
                         video_labels_index[i].append(-1)
                 else:
                     video_labels_index[i].append(-1)
-        video_labels_index = np.array(video_labels_index, dtype=np.long)
+        video_labels_index = np.array(video_labels_index, dtype=np.int64)
         # -----> Mask Frame Model
 
         return video, video_mask, masked_video, video_labels_index

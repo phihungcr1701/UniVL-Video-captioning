@@ -32,6 +32,7 @@ from modules.module_bert import BertModel, BertConfig, BertOnlyMLMHead
 from modules.module_visual import VisualModel, VisualConfig, VisualOnlyMLMHead
 from modules.module_cross import CrossModel, CrossConfig
 from modules.module_decoder import DecoderModel, DecoderConfig
+from modules.unet3d import UNet3DEncoder
 
 logger = logging.getLogger(__name__)
 
@@ -169,6 +170,18 @@ class UniVL(UniVLPreTrainedModel):
 
         self.normalize_video = NormalizeVideo(task_config)
 
+        # UNet3D end-to-end feature extractor (optional, replaces pre-extracted features)
+        self.unet3d = None
+        if check_attr('use_unet3d', task_config):
+            base_channels = getattr(task_config, 'unet3d_base_channels', 64)
+            self.unet3d = UNet3DEncoder(
+                in_channels=3,
+                base_channels=base_channels,
+                out_dim=task_config.video_dim,
+            )
+            show_log(task_config, "Using UNet3D for end-to-end video feature extraction "
+                                  "(base_channels={}, out_dim={}).".format(base_channels, task_config.video_dim))
+
         mILNCELoss = MILNCELoss(batch_size=task_config.batch_size // task_config.n_gpu, n_pair=task_config.n_pair, )
         maxMarginRankingLoss = MaxMarginRankingLoss(margin=task_config.margin,
                                                     negative_weighting=task_config.negative_weighting,
@@ -185,6 +198,27 @@ class UniVL(UniVLPreTrainedModel):
 
         self.apply(self.init_weights)
 
+    def _extract_video_features(self, video):
+        """Extract per-frame features from raw video using UNet3D.
+
+        Parameters
+        ----------
+        video : torch.Tensor, shape (B, k, T, 3, H, W)
+            Raw video frames where k is the number of clips per sample (usually 1),
+            T is the number of frames, and H, W are spatial dimensions.
+
+        Returns
+        -------
+        torch.Tensor, shape (B, k, T, feature_dim)
+        """
+        B, k, T = video.shape[0], video.shape[1], video.shape[2]
+        C, H, W = video.shape[3], video.shape[4], video.shape[5]
+        # Merge batch and clip dimensions for UNet3D: (B*k, 3, T, H, W)
+        video = video.view(B * k, T, C, H, W).permute(0, 2, 1, 3, 4)
+        video = self.unet3d(video)          # (B*k, T, feature_dim)
+        video = video.view(B, k, T, -1)     # (B, k, T, feature_dim)
+        return video
+
     def forward(self, input_ids, token_type_ids, attention_mask, video, video_mask=None,
                 pairs_masked_text=None, pairs_token_labels=None, masked_video=None, video_labels_index=None,
                 input_caption_ids=None, decoder_mask=None, output_caption_ids=None):
@@ -193,6 +227,13 @@ class UniVL(UniVLPreTrainedModel):
         token_type_ids = token_type_ids.view(-1, token_type_ids.shape[-1])
         attention_mask = attention_mask.view(-1, attention_mask.shape[-1])
         video_mask = video_mask.view(-1, video_mask.shape[-1])
+
+        # Extract features from raw video when using UNet3D end-to-end training
+        if self.unet3d is not None:
+            video = self._extract_video_features(video)
+            if masked_video is not None:
+                masked_video = self._extract_video_features(masked_video)
+
         video = self.normalize_video(video)
 
         if input_caption_ids is not None:
@@ -314,6 +355,8 @@ class UniVL(UniVLPreTrainedModel):
             token_type_ids = token_type_ids.view(-1, token_type_ids.shape[-1])
             attention_mask = attention_mask.view(-1, attention_mask.shape[-1])
             video_mask = video_mask.view(-1, video_mask.shape[-1])
+            if self.unet3d is not None:
+                video = self._extract_video_features(video)
             video = self.normalize_video(video)
 
         encoded_layers, _ = self.bert(input_ids, token_type_ids, attention_mask, output_all_encoded_layers=True)
