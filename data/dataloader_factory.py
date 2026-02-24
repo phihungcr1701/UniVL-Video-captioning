@@ -2,6 +2,7 @@ import torch
 from torch.utils.data import DataLoader, SequentialSampler
 from dataloaders.dataloader_youcook_caption import Youcook_Caption_DataLoader
 from dataloaders.dataloader_msrvtt_caption import MSRVTT_Caption_DataLoader
+from dataloaders.dataloader_youcook_raw_video import Youcook_Caption_RawVideo_DataLoader
 
 
 def dataloader_youcook_train(args, tokenizer):
@@ -104,10 +105,67 @@ def dataloader_msrvtt_test(args, tokenizer, logger=None, split_type="test"):
     return dataloader_msrvtt, len(msrvtt_testset)
 
 
+def dataloader_youcook_raw_train(args, tokenizer):
+    """Training dataloader for YoucookII using raw video frames (UNet3D mode)."""
+    dataset = Youcook_Caption_RawVideo_DataLoader(
+        csv=args.train_csv,
+        data_path=args.data_path,
+        video_path=args.video_path,
+        max_words=args.max_words,
+        feature_framerate=args.feature_framerate,
+        tokenizer=tokenizer,
+        max_frames=args.max_frames,
+        clip_height=args.clip_height,
+        clip_width=args.clip_width,
+    )
+
+    train_sampler = torch.utils.data.distributed.DistributedSampler(dataset)
+    dataloader = DataLoader(
+        dataset,
+        batch_size=args.batch_size // args.n_gpu,
+        num_workers=args.num_thread_reader,
+        pin_memory=False,
+        shuffle=(train_sampler is None),
+        sampler=train_sampler,
+        drop_last=True,
+    )
+    return dataloader, len(dataset), train_sampler
+
+
+def dataloader_youcook_raw_test(args, tokenizer, logger):
+    """Validation/test dataloader for YoucookII using raw video frames (UNet3D mode)."""
+    dataset = Youcook_Caption_RawVideo_DataLoader(
+        csv=args.val_csv,
+        data_path=args.data_path,
+        video_path=args.video_path,
+        max_words=args.max_words,
+        feature_framerate=args.feature_framerate,
+        tokenizer=tokenizer,
+        max_frames=args.max_frames,
+        clip_height=args.clip_height,
+        clip_width=args.clip_width,
+    )
+
+    test_sampler = SequentialSampler(dataset)
+    dataloader = DataLoader(
+        dataset,
+        sampler=test_sampler,
+        batch_size=args.batch_size_val,
+        num_workers=args.num_thread_reader,
+        pin_memory=False,
+    )
+
+    if args.local_rank == 0:
+        logger.info('YoucookII raw-video validation pairs: {}'.format(len(dataset)))
+    return dataloader, len(dataset)
+
+
 DATALOADER_DICT = {
     "youcook": {
         "train": dataloader_youcook_train,
-        "val": dataloader_youcook_test
+        "val": dataloader_youcook_test,
+        "train_raw": dataloader_youcook_raw_train,
+        "val_raw": dataloader_youcook_raw_test,
     },
     "msrvtt": {
         "train": dataloader_msrvtt_train,

@@ -17,10 +17,6 @@ from data.dataloader_factory import DATALOADER_DICT
 from trainers.trainer import train_epoch
 from inference.caption_generator import eval_epoch
 
-# Initialize distributed training only if environment is properly configured
-if not torch.distributed.is_initialized():
-    torch.distributed.init_process_group(backend="nccl")
-
 
 def get_args(description='UniVL on Caption Task'):
     parser = argparse.ArgumentParser(description=description)
@@ -91,6 +87,17 @@ def get_args(description='UniVL on Caption Task'):
     parser.add_argument('--decoder_num_hidden_layers', type=int, default=3, help="Layer NO. of decoder.")
 
     parser.add_argument('--stage_two', action='store_true', help="Whether training with decoder.")
+
+    # UNet3D end-to-end arguments
+    parser.add_argument('--use_unet3d', action='store_true',
+                        help="Use UNet3D for end-to-end video feature extraction (no pre-extracted pickle required).")
+    parser.add_argument('--video_path', type=str, default=None,
+                        help="Directory containing raw video files for end-to-end training with UNet3D.")
+    parser.add_argument('--clip_height', type=int, default=224, help="Frame height for UNet3D input.")
+    parser.add_argument('--clip_width', type=int, default=224, help="Frame width for UNet3D input.")
+    parser.add_argument('--unet3d_base_channels', type=int, default=64,
+                        help="Base channel multiplier for UNet3D encoder stages (controls model capacity).")
+
     args = parser.parse_args()
 
     if args.local_rank is None:
@@ -109,6 +116,16 @@ def get_args(description='UniVL on Caption Task'):
 
 def main():
     args = get_args()
+
+    # Initialize distributed training
+    if not torch.distributed.is_initialized():
+        backend = "nccl" if torch.cuda.is_available() else "gloo"
+        try:
+            torch.distributed.init_process_group(backend=backend)
+        except RuntimeError:
+            # Fall back to gloo (e.g. when NCCL is unavailable on CPU-only machines)
+            torch.distributed.init_process_group(backend="gloo")
+
     args, logger = set_seed_logger(args)
     device, n_gpu = init_device(args, args.local_rank, logger)
 
@@ -127,7 +144,8 @@ def main():
             logger.warning("pycocoevalcap not available. Evaluation metrics will be skipped.")
 
     assert args.datatype in DATALOADER_DICT
-    test_dataloader, test_length = DATALOADER_DICT[args.datatype]["val"](args, tokenizer, logger)
+    val_key = "val_raw" if args.use_unet3d else "val"
+    test_dataloader, test_length = DATALOADER_DICT[args.datatype][val_key](args, tokenizer, logger)
     if args.local_rank == 0:
         logger.info("***** Running test *****")
         logger.info("  Num examples = %d", test_length)
@@ -135,7 +153,8 @@ def main():
         logger.info("  Num steps = %d", len(test_dataloader))
 
     if args.do_train:
-        train_dataloader, train_length, train_sampler = DATALOADER_DICT[args.datatype]["train"](args, tokenizer)
+        train_key = "train_raw" if args.use_unet3d else "train"
+        train_dataloader, train_length, train_sampler = DATALOADER_DICT[args.datatype][train_key](args, tokenizer)
         num_train_optimization_steps = (int(len(train_dataloader) + args.gradient_accumulation_steps - 1)
                                         / args.gradient_accumulation_steps) * args.epochs
 
