@@ -160,10 +160,10 @@ class UniVL(UniVLPreTrainedModel):
                 self.decoder = DecoderModel(decoder_config, bert_word_embeddings_weight, bert_position_embeddings_weight)
                 # <=== End of Decoder
 
-            if self.task_config.do_pretrain:
-                self.cls = BertOnlyMLMHead(bert_config, bert_word_embeddings_weight)
-                self.cls_visual = VisualOnlyMLMHead(visual_config, visual_word_embeddings_weight)
-                self.alm_loss_fct = CrossEntropyLoss(ignore_index=-1)
+            # MELTR: Always initialize cls and cls_visual for MLM/MFM tasks support
+            self.cls = BertOnlyMLMHead(bert_config, bert_word_embeddings_weight)
+            self.cls_visual = VisualOnlyMLMHead(visual_config, visual_word_embeddings_weight)
+            self.alm_loss_fct = CrossEntropyLoss(ignore_index=-1)
                 
             self.similarity_dense = nn.Linear(bert_config.hidden_size, 1)
             self.decoder_loss_fct = CrossEntropyLoss(ignore_index=-1)
@@ -208,75 +208,101 @@ class UniVL(UniVLPreTrainedModel):
                                                                          video, video_mask, shaped=True)
         decoder_ids, decoder_ids_mask, sequence_decoder_output, visual_decoder_output = input_ids, attention_mask, sequence_output, visual_output
 
-        losses = []
+        # MELTR: Initialize losses for all 8 tasks (use 0 for disabled tasks)
+        losses = [None] * 8
         
         # MELTR: Task 0 - joint similarity (without masking)
         if tasks[0]:
             sim_matrix = self.get_similarity_logits_joint(sequence_output, visual_output, attention_mask,
                                                     video_mask, shaped=True)
             sim_loss = self.loss_fct_joint(sim_matrix)
-            losses.append(sim_loss)
+            losses[0] = sim_loss
+        else:
+            losses[0] = torch.tensor(0.0, device=sequence_output.device, requires_grad=True)
         
         # MELTR: Task 1 - align similarity (with cross-encoder)
         if tasks[1]:
             sim_matrix = self.get_similarity_logits_align(sequence_output, visual_output, attention_mask,
                                                     video_mask, shaped=True)
             sim_loss = self.loss_fct_align(sim_matrix)
-            losses.append(sim_loss)
+            losses[1] = sim_loss
+        else:
+            losses[1] = torch.tensor(0.0, device=sequence_output.device, requires_grad=True)
         
-        pairs_masked_text = pairs_masked_text.view(-1, pairs_masked_text.shape[-1])
-        pairs_token_labels = pairs_token_labels.view(-1, pairs_token_labels.shape[-1])
+        # MELTR: Tasks 2-5 require masked data
+        if pairs_masked_text is not None:
+            pairs_masked_text = pairs_masked_text.view(-1, pairs_masked_text.shape[-1])
+            pairs_token_labels = pairs_token_labels.view(-1, pairs_token_labels.shape[-1])
 
-        masked_video = self.normalize_video(masked_video)
-        video_labels_index = video_labels_index.view(-1, video_labels_index.shape[-1])
+            masked_video = self.normalize_video(masked_video)
+            video_labels_index = video_labels_index.view(-1, video_labels_index.shape[-1])
 
-        sequence_output_alm, visual_output_alm = self.get_sequence_visual_output(pairs_masked_text, token_type_ids,
-                                                                                 attention_mask, masked_video, video_mask, shaped=True)
+            sequence_output_alm, visual_output_alm = self.get_sequence_visual_output(pairs_masked_text, token_type_ids,
+                                                                                     attention_mask, masked_video, video_mask, shaped=True)
 
-        sequence_decoder_output_alm, visual_decoder_output_alm = sequence_output_alm, visual_output_alm
+            sequence_decoder_output_alm, visual_decoder_output_alm = sequence_output_alm, visual_output_alm
 
-        cross_output, pooled_output, concat_mask = self._get_cross_output(sequence_output_alm, visual_output_alm, attention_mask, video_mask)
-        sequence_cross_output, visual_cross_output = torch.split(cross_output, [attention_mask.size(-1), video_mask.size(-1)], dim=1)
+            cross_output, pooled_output, concat_mask = self._get_cross_output(sequence_output_alm, visual_output_alm, attention_mask, video_mask)
+            sequence_cross_output, visual_cross_output = torch.split(cross_output, [attention_mask.size(-1), video_mask.size(-1)], dim=1)
 
-        # MELTR: Task 2 - MLM loss
-        if tasks[2]:
-            alm_loss = self._calculate_mlm_loss(sequence_cross_output, pairs_token_labels)
-            losses.append(alm_loss)
+            # MELTR: Task 2 - MLM loss
+            if tasks[2]:
+                alm_loss = self._calculate_mlm_loss(sequence_cross_output, pairs_token_labels)
+                losses[2] = alm_loss
+            else:
+                losses[2] = torch.tensor(0.0, device=sequence_output.device, requires_grad=True)
 
-        # MELTR: Task 3 - MFM loss
-        if tasks[3]:
-            nce_loss = self._calculate_mfm_loss(visual_cross_output, video, video_mask, video_labels_index)
-            losses.append(nce_loss)
+            # MELTR: Task 3 - MFM loss
+            if tasks[3]:
+                nce_loss = self._calculate_mfm_loss(visual_cross_output, video, video_mask, video_labels_index)
+                losses[3] = nce_loss
+            else:
+                losses[3] = torch.tensor(0.0, device=sequence_output.device, requires_grad=True)
 
-        # MELTR: Task 4 - m_joint similarity (masked, without cross-encoder)
-        if tasks[4]:
-            sim_matrix = self.get_similarity_logits_joint(sequence_output_alm, visual_output_alm, attention_mask, video_mask, shaped=True)
-            m_joint_loss = self.loss_fct_joint(sim_matrix)
-            losses.append(m_joint_loss)
+            # MELTR: Task 4 - m_joint similarity (masked, without cross-encoder)
+            if tasks[4]:
+                sim_matrix = self.get_similarity_logits_joint(sequence_output_alm, visual_output_alm, attention_mask, video_mask, shaped=True)
+                m_joint_loss = self.loss_fct_joint(sim_matrix)
+                losses[4] = m_joint_loss
+            else:
+                losses[4] = torch.tensor(0.0, device=sequence_output.device, requires_grad=True)
 
-        # MELTR: Task 5 - m_align similarity (masked, with cross-encoder)
-        if tasks[5]:
-            sim_matrix = self.get_similarity_logits_align(sequence_output_alm, visual_output_alm, attention_mask, video_mask, shaped=True)
-            m_align_loss = self.loss_fct_align(sim_matrix)
-            losses.append(m_align_loss)
+            # MELTR: Task 5 - m_align similarity (masked, with cross-encoder)
+            if tasks[5]:
+                sim_matrix = self.get_similarity_logits_align(sequence_output_alm, visual_output_alm, attention_mask, video_mask, shaped=True)
+                m_align_loss = self.loss_fct_align(sim_matrix)
+                losses[5] = m_align_loss
+            else:
+                losses[5] = torch.tensor(0.0, device=sequence_output.device, requires_grad=True)
+
+            # MELTR: Task 7 - Decoder loss (with masking)
+            if tasks[7] and input_caption_ids is not None:
+                decoder_scores, res_tuples = self._get_decoder_score(sequence_decoder_output_alm, visual_decoder_output_alm,
+                                                                     decoder_ids, decoder_ids_mask, video_mask,
+                                                                     input_caption_ids, decoder_mask, shaped=True)
+                output_caption_ids_view = output_caption_ids.view(-1, output_caption_ids.shape[-1])
+                decoder_loss = self.decoder_loss_fct(decoder_scores.view(-1, self.bert_config.vocab_size), output_caption_ids_view.view(-1))
+                losses[7] = decoder_loss
+            else:
+                losses[7] = torch.tensor(0.0, device=sequence_output.device, requires_grad=True)
+        else:
+            # No masked data available, set tasks 2-5 and 7 to 0
+            losses[2] = torch.tensor(0.0, device=sequence_output.device, requires_grad=True)
+            losses[3] = torch.tensor(0.0, device=sequence_output.device, requires_grad=True)
+            losses[4] = torch.tensor(0.0, device=sequence_output.device, requires_grad=True)
+            losses[5] = torch.tensor(0.0, device=sequence_output.device, requires_grad=True)
+            losses[7] = torch.tensor(0.0, device=sequence_output.device, requires_grad=True)
 
         # MELTR: Task 6 - Decoder loss (without masking)
-        if tasks[6]:
+        if tasks[6] and input_caption_ids is not None:
             decoder_scores, res_tuples = self._get_decoder_score(sequence_decoder_output, visual_decoder_output,
                                                                  decoder_ids, decoder_ids_mask, video_mask,
                                                                  input_caption_ids, decoder_mask, shaped=True)
-            output_caption_ids = output_caption_ids.view(-1, output_caption_ids.shape[-1])
-            decoder_loss = self.decoder_loss_fct(decoder_scores.view(-1, self.bert_config.vocab_size), output_caption_ids.view(-1))
-            losses.append(decoder_loss)
-
-        # MELTR: Task 7 - Decoder loss (with masking)
-        if tasks[7]:
-            decoder_scores, res_tuples = self._get_decoder_score(sequence_decoder_output_alm, visual_decoder_output_alm,
-                                                                 decoder_ids, decoder_ids_mask, video_mask,
-                                                                 input_caption_ids, decoder_mask, shaped=True)
-            output_caption_ids = output_caption_ids.view(-1, output_caption_ids.shape[-1])
-            decoder_loss = self.decoder_loss_fct(decoder_scores.view(-1, self.bert_config.vocab_size), output_caption_ids.view(-1))
-            losses.append(decoder_loss)
+            output_caption_ids_view = output_caption_ids.view(-1, output_caption_ids.shape[-1])
+            decoder_loss = self.decoder_loss_fct(decoder_scores.view(-1, self.bert_config.vocab_size), output_caption_ids_view.view(-1))
+            losses[6] = decoder_loss
+        else:
+            losses[6] = torch.tensor(0.0, device=sequence_output.device, requires_grad=True)
 
         return losses
 

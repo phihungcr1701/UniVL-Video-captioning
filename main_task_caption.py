@@ -97,7 +97,7 @@ def get_args(description='UniVL on Caption Task'):
     parser.add_argument('--decoder_num_hidden_layers', type=int, default=3, help="Layer NO. of decoder.")
 
     # MELTR-specific arguments
-    parser.add_argument('--tasks', default=[1, 1, 1, 1, 1, 1, 1, 1], type=str2list, help='task weights')
+    parser.add_argument('--tasks', default=[0, 1, 0, 0, 0, 0, 1, 0], type=str2list, help='task weights')
     parser.add_argument('--target_tasks', default=[0, 0, 0, 0, 0, 0, 1, 0], type=str2list, help='target task for meta-learning')
     parser.add_argument('--lr_vnet', default=0.001, type=float, help='MELTR meta-learning rate')
     parser.add_argument('--decay_vnet', default=0.00003, type=float, help='MELTR weight decay')
@@ -127,11 +127,20 @@ def get_args(description='UniVL on Caption Task'):
     args.taskName = np.array(taskName)[np.array(args.tasks) == 1]
     args.taskNum = (np.array(args.tasks) == 1).sum()
     
-    # Set target tasks based on task type (caption or retrieval)
+    # Set target tasks and default tasks based on task type
     if args.task_type == "caption":
-        args.target_tasks = [0, 0, 0, 0, 0, 0, 1, 0]
+        # For caption: disable MLM/MFM (tasks 2-5) since dataloader doesn't provide masked data
+        # Enable: alignment (1), decoder (6)
+        if args.tasks == [1, 1, 1, 1, 1, 1, 1, 1]:  # If default not modified
+            args.tasks = [0, 1, 0, 0, 0, 0, 1, 0]
+            args.taskNum = 2
+        args.target_tasks = [0, 0, 0, 0, 0, 0, 1, 0]  # Focus on decoder
     else:  # retrieval
-        args.target_tasks = [0, 1, 0, 0, 0, 0, 0, 0]
+        # For retrieval: disable decoder tasks (6-7)
+        if args.tasks == [1, 1, 1, 1, 1, 1, 1, 1]:  # If default not modified
+            args.tasks = [1, 1, 1, 1, 1, 1, 0, 0]
+            args.taskNum = 6
+        args.target_tasks = [0, 1, 0, 0, 0, 0, 0, 0]  # Focus on alignment
 
     return args
 

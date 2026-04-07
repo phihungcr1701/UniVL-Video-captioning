@@ -33,6 +33,8 @@ def train_epoch(epoch, args, model, train_dataloader, device, n_gpu, optimizer, 
             
             # MELTR: Combine losses using auxiliary network
             if auxiliary_combine_net is not None:
+                # losses should always be a list of 8 tensors
+                assert len(losses) == 8, f"Expected 8 losses, got {len(losses)}"
                 loss = auxiliary_combine_net(torch.stack(losses).unsqueeze(1))
             else:
                 loss = sum(losses)
