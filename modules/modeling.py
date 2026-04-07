@@ -184,11 +184,15 @@ class UniVL(UniVLPreTrainedModel):
             self.loss_fct = CrossEn() if self._stage_two else maxMarginRankingLoss
             self._pretrain_sim_loss_fct = maxMarginRankingLoss
 
+        # MELTR: Loss functions for joint and align tasks
+        self.loss_fct_align = CrossEn()
+        self.loss_fct_joint = maxMarginRankingLoss
+
         self.apply(self.init_weights)
 
     def forward(self, input_ids, token_type_ids, attention_mask, video, video_mask=None,
                 pairs_masked_text=None, pairs_token_labels=None, masked_video=None, video_labels_index=None,
-                input_caption_ids=None, decoder_mask=None, output_caption_ids=None):
+                input_caption_ids=None, decoder_mask=None, output_caption_ids=None, tasks=[0, 1, 0, 0, 0, 0, 1, 0]):
 
         input_ids = input_ids.view(-1, input_ids.shape[-1])
         token_type_ids = token_type_ids.view(-1, token_type_ids.shape[-1])
@@ -202,86 +206,79 @@ class UniVL(UniVLPreTrainedModel):
 
         sequence_output, visual_output = self.get_sequence_visual_output(input_ids, token_type_ids, attention_mask,
                                                                          video, video_mask, shaped=True)
+        decoder_ids, decoder_ids_mask, sequence_decoder_output, visual_decoder_output = input_ids, attention_mask, sequence_output, visual_output
 
-        if self.training:
-            loss = 0.
-            if self._stage_one:
-                sim_matrix = self.get_similarity_logits(sequence_output, visual_output, attention_mask,
-                                                        video_mask, shaped=True)
-                sim_loss = self.loss_fct(sim_matrix)
-                loss += sim_loss
+        losses = []
+        
+        # MELTR: Task 0 - joint similarity (without masking)
+        if tasks[0]:
+            sim_matrix = self.get_similarity_logits_joint(sequence_output, visual_output, attention_mask,
+                                                    video_mask, shaped=True)
+            sim_loss = self.loss_fct_joint(sim_matrix)
+            losses.append(sim_loss)
+        
+        # MELTR: Task 1 - align similarity (with cross-encoder)
+        if tasks[1]:
+            sim_matrix = self.get_similarity_logits_align(sequence_output, visual_output, attention_mask,
+                                                    video_mask, shaped=True)
+            sim_loss = self.loss_fct_align(sim_matrix)
+            losses.append(sim_loss)
+        
+        pairs_masked_text = pairs_masked_text.view(-1, pairs_masked_text.shape[-1])
+        pairs_token_labels = pairs_token_labels.view(-1, pairs_token_labels.shape[-1])
 
-            if self._stage_two:
-                if self.task_config.do_pretrain:
-                    pairs_masked_text = pairs_masked_text.view(-1, pairs_masked_text.shape[-1])
-                    pairs_token_labels = pairs_token_labels.view(-1, pairs_token_labels.shape[-1])
+        masked_video = self.normalize_video(masked_video)
+        video_labels_index = video_labels_index.view(-1, video_labels_index.shape[-1])
 
-                    masked_video = self.normalize_video(masked_video)
-                    video_labels_index = video_labels_index.view(-1, video_labels_index.shape[-1])
+        sequence_output_alm, visual_output_alm = self.get_sequence_visual_output(pairs_masked_text, token_type_ids,
+                                                                                 attention_mask, masked_video, video_mask, shaped=True)
 
-                    sequence_output_alm, visual_output_alm = self.get_sequence_visual_output(pairs_masked_text, token_type_ids,
-                                                                                             attention_mask, masked_video, video_mask, shaped=True)
+        sequence_decoder_output_alm, visual_decoder_output_alm = sequence_output_alm, visual_output_alm
 
-                    cross_output, pooled_output, concat_mask = self._get_cross_output(sequence_output_alm, visual_output_alm, attention_mask, video_mask)
-                    sequence_cross_output, visual_cross_output = torch.split(cross_output, [attention_mask.size(-1), video_mask.size(-1)], dim=1)
+        cross_output, pooled_output, concat_mask = self._get_cross_output(sequence_output_alm, visual_output_alm, attention_mask, video_mask)
+        sequence_cross_output, visual_cross_output = torch.split(cross_output, [attention_mask.size(-1), video_mask.size(-1)], dim=1)
 
-                    alm_loss = self._calculate_mlm_loss(sequence_cross_output, pairs_token_labels)
-                    loss += alm_loss
+        # MELTR: Task 2 - MLM loss
+        if tasks[2]:
+            alm_loss = self._calculate_mlm_loss(sequence_cross_output, pairs_token_labels)
+            losses.append(alm_loss)
 
-                    nce_loss = self._calculate_mfm_loss(visual_cross_output, video, video_mask, video_labels_index)
-                    loss += nce_loss
+        # MELTR: Task 3 - MFM loss
+        if tasks[3]:
+            nce_loss = self._calculate_mfm_loss(visual_cross_output, video, video_mask, video_labels_index)
+            losses.append(nce_loss)
 
-                    sim_matrix = self.get_similarity_logits(sequence_output, visual_output, attention_mask, video_mask,
-                                                            shaped=True, _pretrain_joint=True)
-                    sim_loss_joint = self._pretrain_sim_loss_fct(sim_matrix)
-                    loss += sim_loss_joint
+        # MELTR: Task 4 - m_joint similarity (masked, without cross-encoder)
+        if tasks[4]:
+            sim_matrix = self.get_similarity_logits_joint(sequence_output_alm, visual_output_alm, attention_mask, video_mask, shaped=True)
+            m_joint_loss = self.loss_fct_joint(sim_matrix)
+            losses.append(m_joint_loss)
 
-                if (input_caption_ids is not None) and \
-                        (self.task_config.do_pretrain
-                         or (self.task_config.do_pretrain is False and self.task_config.task_type == "caption")):
-                    if self.task_config.do_pretrain:
-                        decoder_scores, res_tuples = self._get_decoder_score(sequence_output_alm, visual_output_alm,
-                                                                             input_ids, attention_mask, video_mask,
-                                                                             input_caption_ids, decoder_mask, shaped=True)
-                    elif self.task_config.task_type == "caption":
-                        decoder_scores, res_tuples = self._get_decoder_score(sequence_output, visual_output,
-                                                                             input_ids, attention_mask, video_mask,
-                                                                             input_caption_ids, decoder_mask, shaped=True)
-                    else:
-                        raise NotImplementedError
+        # MELTR: Task 5 - m_align similarity (masked, with cross-encoder)
+        if tasks[5]:
+            sim_matrix = self.get_similarity_logits_align(sequence_output_alm, visual_output_alm, attention_mask, video_mask, shaped=True)
+            m_align_loss = self.loss_fct_align(sim_matrix)
+            losses.append(m_align_loss)
 
-                    output_caption_ids = output_caption_ids.view(-1, output_caption_ids.shape[-1])
-                    decoder_loss = self.decoder_loss_fct(decoder_scores.view(-1, self.bert_config.vocab_size), output_caption_ids.view(-1))
-                    loss += decoder_loss
+        # MELTR: Task 6 - Decoder loss (without masking)
+        if tasks[6]:
+            decoder_scores, res_tuples = self._get_decoder_score(sequence_decoder_output, visual_decoder_output,
+                                                                 decoder_ids, decoder_ids_mask, video_mask,
+                                                                 input_caption_ids, decoder_mask, shaped=True)
+            output_caption_ids = output_caption_ids.view(-1, output_caption_ids.shape[-1])
+            decoder_loss = self.decoder_loss_fct(decoder_scores.view(-1, self.bert_config.vocab_size), output_caption_ids.view(-1))
+            losses.append(decoder_loss)
 
-                if self.task_config.do_pretrain or self.task_config.task_type == "retrieval":
-                    if self.task_config.do_pretrain:
-                        sim_matrix_text_visual = self.get_similarity_logits(sequence_output_alm, visual_output_alm,
-                                                                            attention_mask, video_mask, shaped=True)
-                    elif self.task_config.task_type == "retrieval":
-                        sim_matrix_text_visual = self.get_similarity_logits(sequence_output, visual_output,
-                                                                            attention_mask, video_mask, shaped=True)
-                    else:
-                        raise NotImplementedError
+        # MELTR: Task 7 - Decoder loss (with masking)
+        if tasks[7]:
+            decoder_scores, res_tuples = self._get_decoder_score(sequence_decoder_output_alm, visual_decoder_output_alm,
+                                                                 decoder_ids, decoder_ids_mask, video_mask,
+                                                                 input_caption_ids, decoder_mask, shaped=True)
+            output_caption_ids = output_caption_ids.view(-1, output_caption_ids.shape[-1])
+            decoder_loss = self.decoder_loss_fct(decoder_scores.view(-1, self.bert_config.vocab_size), output_caption_ids.view(-1))
+            losses.append(decoder_loss)
 
-                    sim_loss_text_visual = self.loss_fct(sim_matrix_text_visual)
-                    loss += sim_loss_text_visual
-
-            return loss
-        else:
-            # During evaluation, compute loss only for caption task with decoder
-            if (self._stage_two and 
-                input_caption_ids is not None and 
-                output_caption_ids is not None and
-                self.task_config.task_type == "caption"):
-                decoder_scores, res_tuples = self._get_decoder_score(sequence_output, visual_output,
-                                                                     input_ids, attention_mask, video_mask,
-                                                                     input_caption_ids, decoder_mask, shaped=True)
-                output_caption_ids = output_caption_ids.view(-1, output_caption_ids.shape[-1])
-                decoder_loss = self.decoder_loss_fct(decoder_scores.view(-1, self.bert_config.vocab_size), output_caption_ids.view(-1))
-                return decoder_loss
-            else:
-                return None
+        return losses
 
     def _calculate_mlm_loss(self, sequence_output_alm, pairs_token_labels):
         alm_scores = self.cls(sequence_output_alm)
@@ -385,6 +382,29 @@ class UniVL(UniVLPreTrainedModel):
 
             retrieve_logits_list.append(retrieve_logits_row)
         retrieve_logits = torch.cat(retrieve_logits_list, dim=0)
+        return retrieve_logits
+
+    def get_similarity_logits_joint(self, sequence_output, visual_output, attention_mask, video_mask, shaped=False, _pretrain_joint=False):
+        """MELTR: Joint similarity using mean pooling normalization (without cross encoder)"""
+        if shaped is False:
+            attention_mask = attention_mask.view(-1, attention_mask.shape[-1])
+            video_mask = video_mask.view(-1, video_mask.shape[-1])
+
+        text_out, video_out = self._mean_pooling_for_similarity(sequence_output, visual_output, attention_mask, video_mask)
+        if self.task_config.use_mil is False:
+            text_out = F.normalize(text_out, dim=-1)
+            video_out = F.normalize(video_out, dim=-1)
+        retrieve_logits = torch.matmul(text_out, video_out.t())
+
+        return retrieve_logits
+
+    def get_similarity_logits_align(self, sequence_output, visual_output, attention_mask, video_mask, shaped=False, _pretrain_joint=False):
+        """MELTR: Align similarity using cross encoder"""
+        if shaped is False:
+            attention_mask = attention_mask.view(-1, attention_mask.shape[-1])
+            video_mask = video_mask.view(-1, video_mask.shape[-1])
+        
+        retrieve_logits = self._cross_similarity(sequence_output, visual_output, attention_mask, video_mask)
         return retrieve_logits
 
     def get_similarity_logits(self, sequence_output, visual_output, attention_mask, video_mask, shaped=False, _pretrain_joint=False):

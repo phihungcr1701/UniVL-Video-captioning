@@ -6,20 +6,26 @@ from __future__ import print_function
 import torch
 import os
 import argparse
+import numpy as np
 
 from metrics import CaptionEvaluator, PYCOCOEVALCAP_AVAILABLE
 from modules.tokenization import BertTokenizer
+from modules.meltr import MELTR, MELTROptimizer
 
 from utils.setup_utils import set_seed_logger, init_device
 from utils.model_utils import init_model, save_model, load_model
 from utils.optimizer_utils import prep_optimizer
+from utils.common_utils import str2list, AverageMeter
 from data.dataloader_factory import DATALOADER_DICT
 from trainers.trainer import train_epoch
 from inference.caption_generator import eval_epoch
 
 # Initialize distributed training only if environment is properly configured
-if not torch.distributed.is_initialized():
-    torch.distributed.init_process_group(backend="nccl")
+try:
+    if not torch.distributed.is_initialized():
+        torch.distributed.init_process_group(backend="nccl")
+except:
+    pass
 
 
 def get_args(description='UniVL on Caption Task'):
@@ -90,6 +96,18 @@ def get_args(description='UniVL on Caption Task'):
     parser.add_argument('--cross_num_hidden_layers', type=int, default=2, help="Layer NO. of cross.")
     parser.add_argument('--decoder_num_hidden_layers', type=int, default=3, help="Layer NO. of decoder.")
 
+    # MELTR-specific arguments
+    parser.add_argument('--tasks', default=[1, 1, 1, 1, 1, 1, 1, 1], type=str2list, help='task weights')
+    parser.add_argument('--target_tasks', default=[0, 0, 0, 0, 0, 0, 1, 0], type=str2list, help='target task for meta-learning')
+    parser.add_argument('--lr_vnet', default=0.001, type=float, help='MELTR meta-learning rate')
+    parser.add_argument('--decay_vnet', default=0.00003, type=float, help='MELTR weight decay')
+    parser.add_argument('--auxgrad-every', type=int, default=3, help="number of opt. steps between aux params update")
+    parser.add_argument('--transformer_dim', default=[512, 128, 256], type=str2list, help="MELTR transformer dimensions")
+    parser.add_argument('--vnet_max_grad', default=50, type=float, help="MELTR max gradient norm")
+    parser.add_argument('--max_grad_norm', default=1., type=float, help="Max gradient norm")
+    parser.add_argument('--gamma', default=0.1, type=float, help="MELTR regularization weight")
+    parser.add_argument('--reg', default=0, type=int, help="MELTR regularization flag")
+
     parser.add_argument('--stage_two', action='store_true', help="Whether training with decoder.")
     args = parser.parse_args()
 
@@ -103,6 +121,17 @@ def get_args(description='UniVL on Caption Task'):
         raise ValueError("At least one of `do_train` or `do_eval` must be True.")
 
     args.batch_size = int(args.batch_size / args.gradient_accumulation_steps)
+    
+    # MELTR: Calculate task number and set target tasks
+    taskName = ["joint", "alignment", "mlm", "mfm", "m_joint", "m_align", "decoder", "m_decoder"]
+    args.taskName = np.array(taskName)[np.array(args.tasks) == 1]
+    args.taskNum = (np.array(args.tasks) == 1).sum()
+    
+    # Set target tasks based on task type (caption or retrieval)
+    if args.task_type == "caption":
+        args.target_tasks = [0, 0, 0, 0, 0, 0, 1, 0]
+    else:  # retrieval
+        args.target_tasks = [0, 1, 0, 0, 0, 0, 0, 0]
 
     return args
 
@@ -144,11 +173,28 @@ def main():
             coef_lr = 1.0
         optimizer, scheduler, model = prep_optimizer(args, model, num_train_optimization_steps, device, n_gpu, args.local_rank, coef_lr=coef_lr)
 
+        # MELTR: Initialize auxiliary network and meta-optimizer
+        auxiliary_combine_net = MELTR(
+            t_dim=args.taskNum if hasattr(args, 'taskNum') else len(args.tasks),
+            f_dim=args.transformer_dim[0],
+            i_dim=1,
+            h1_dim=args.transformer_dim[1],
+            h2_dim=args.transformer_dim[2],
+            o_dim=1
+        ).to(device)
+        
+        auxiliary_param = list(auxiliary_combine_net.parameters())
+        meta_opt = torch.optim.Adam(auxiliary_param, lr=args.lr_vnet, weight_decay=args.decay_vnet)
+        meta_optimizer = MELTROptimizer(meta_optimizer=meta_opt, max_grad_norm=args.vnet_max_grad)
+        auxiliary_combine_net.eval()
+
         if args.local_rank == 0:
             logger.info("***** Running training *****")
             logger.info("  Num examples = %d", train_length)
             logger.info("  Batch size = %d", args.batch_size)
             logger.info("  Num steps = %d", num_train_optimization_steps * args.gradient_accumulation_steps)
+            logger.info("  Tasks: %s", args.tasks)
+            logger.info("  Target Tasks: %s", args.target_tasks)
 
         best_score = 0.00001
         best_output_model_file = None
@@ -157,7 +203,10 @@ def main():
             train_sampler.set_epoch(epoch)
 
             tr_loss, global_step = train_epoch(epoch, args, model, train_dataloader, device, n_gpu, optimizer,
-                                               scheduler, global_step, logger, local_rank=args.local_rank)
+                                               scheduler, global_step, logger, 
+                                               auxiliary_combine_net=auxiliary_combine_net, 
+                                               meta_optimizer=meta_optimizer,
+                                               local_rank=args.local_rank)
 
             if args.local_rank == 0:
                 logger.info("Epoch %d/%s Finished, Train Loss: %f", epoch + 1, args.epochs, tr_loss)
