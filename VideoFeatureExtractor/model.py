@@ -1,7 +1,7 @@
 import sys
 import torch as th
 import torchvision.models as models
-from videocnn.models import resnext, s3dg
+from videocnn.models import resnext, s3dg, unet3d
 from torch import nn
 
 
@@ -67,7 +67,7 @@ def init_weight(model, state_dict, should_omit="s3dg."):
     return model
 
 def get_model(args):
-    assert args.type in ['2d', '3d', 's3dg']
+    assert args.type in ['2d', '3d', 's3dg', 'unet3d']
     if args.type == '2d':
         print('Loading 2D-ResNet-152 ...')
         model = models.resnet152(pretrained=True)
@@ -91,6 +91,14 @@ def get_model(args):
         model = model.cuda()
         model_data = th.load(args.s3d_model_path)
         model = init_weight(model, model_data)
+    elif args.type == 'unet3d':
+        # UNet3D is a 3D CNN (same Conv3d/BatchNorm3d building blocks as S3D)
+        # with an encoder-decoder architecture and skip connections.
+        # No standard pretrained weights are available; the model is
+        # initialized from scratch and fine-tuned on the target dataset.
+        print('Loading UNet3D ...')
+        model = unet3d.UNet3D(num_classes=512, extract_features=True)
+        model = model.cuda()
 
 
     model.eval()
