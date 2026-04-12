@@ -31,6 +31,8 @@ def init_qformer_backbone(
 	"""
 	encoder_config = BertConfig.from_pretrained(pretrained_name)
 	encoder_config.encoder_width = vision_width
+	# CHANGE: Newer transformers requires decoder mode when using cross-attention in BertLayer.
+	encoder_config.is_decoder = True
 	encoder_config.add_cross_attention = True
 	encoder_config.cross_attention_freq = cross_attention_freq
 	encoder_config.query_length = num_query_tokens
