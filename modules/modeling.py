@@ -164,7 +164,6 @@ class UniVL(UniVLPreTrainedModel):
 
             if self.train_sim_after_cross is False:
                 # CHANGE: Replace CrossModel + DecoderModel with BLIP2-style Q-Former + FLAN-T5.
-                self.projection = ProjectionLayer(input_dim=bert_config.hidden_size, output_dim=2048)
                 self.t5_model = T5Model(
                     t5_model_name=getattr(task_config, "t5_model", "google/flan-t5-xl"),
                     lora=getattr(task_config, "lora", True),
@@ -174,6 +173,11 @@ class UniVL(UniVLPreTrainedModel):
                     scst=getattr(task_config, "scst", False),
                     beam_size=getattr(task_config, "beam_size", 5),
                 )
+                # CHANGE: Projection output dim must match the loaded T5 hidden size.
+                t5_hidden_size = getattr(self.t5_model.t5_model.config, "d_model", None)
+                if t5_hidden_size is None:
+                    t5_hidden_size = getattr(self.t5_model.t5_model.config, "hidden_size", 2048)
+                self.projection = ProjectionLayer(input_dim=bert_config.hidden_size, output_dim=t5_hidden_size)
                 self.prompt_text = getattr(task_config, "prompt_text", "a video of")
 
             if self.task_config.do_pretrain:
