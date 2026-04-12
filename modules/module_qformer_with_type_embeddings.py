@@ -82,8 +82,16 @@ class QFormerWithTypeEmbeddings(nn.Module):
 		embeddings = self.dropout(embeddings)
 
 		query_tokens = self.qformer.query_tokens.expand(batch_size, -1, -1)
+		query_attention_mask = torch.ones(
+			query_tokens.size()[:-1],
+			dtype=torch.long,
+			device=query_tokens.device,
+		)
+
+		# CHANGE: HuggingFace BertModel uses `inputs_embeds`, not BLIP2's `query_embeds`.
 		query_output = self.qformer.bert(
-			query_embeds=query_tokens,
+			inputs_embeds=query_tokens,
+			attention_mask=query_attention_mask,
 			encoder_hidden_states=embeddings,
 			encoder_attention_mask=attention_mask,
 			return_dict=True,
