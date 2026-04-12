@@ -9,6 +9,7 @@ def train_epoch(epoch, args, model, train_dataloader, device, n_gpu, optimizer, 
     log_step = args.n_display
     start_time = time.time()
     total_loss = 0
+    use_scst = getattr(args, "scst", False) and epoch >= getattr(args, "scst_start_epoch", 50)
 
     for step, batch in enumerate(train_dataloader):
         batch = tuple(t.to(device=device, non_blocking=True) for t in batch)
@@ -21,7 +22,7 @@ def train_epoch(epoch, args, model, train_dataloader, device, n_gpu, optimizer, 
                      pairs_masked_text=pairs_masked_text, pairs_token_labels=pairs_token_labels,
                      masked_video=masked_video, video_labels_index=video_labels_index,
                      input_caption_ids=pairs_input_caption_ids, decoder_mask=pairs_decoder_mask,
-                     output_caption_ids=pairs_output_caption_ids)
+                     output_caption_ids=pairs_output_caption_ids, scst=use_scst)
 
         if n_gpu > 1:
             loss = loss.mean()
@@ -43,8 +44,9 @@ def train_epoch(epoch, args, model, train_dataloader, device, n_gpu, optimizer, 
 
             global_step += 1
             if global_step % log_step == 0 and local_rank == 0:
-                logger.info("Epoch: %d/%s, Step: %d/%d, Lr: %s, Loss: %f, Time/step: %f", epoch + 1,
-                            args.epochs, step + 1,
+                phase_name = "SCST" if use_scst else "XE"
+                logger.info("Epoch: %d/%s [%s], Step: %d/%d, Lr: %s, Loss: %f, Time/step: %f", epoch + 1,
+                            args.epochs, phase_name, step + 1,
                             len(train_dataloader), "-".join([str('%.6f'%itm) for itm in sorted(list(set(optimizer.get_lr())))]),
                             float(loss),
                             (time.time() - start_time) / (log_step * args.gradient_accumulation_steps))

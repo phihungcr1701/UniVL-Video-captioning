@@ -90,6 +90,22 @@ def get_args(description='UniVL on Caption Task'):
     parser.add_argument('--cross_num_hidden_layers', type=int, default=2, help="Layer NO. of cross.")
     parser.add_argument('--decoder_num_hidden_layers', type=int, default=3, help="Layer NO. of decoder.")
 
+    # CHANGE: Q-Former + FLAN-T5 migration arguments.
+    parser.add_argument('--num_query_tokens', type=int, default=32, help="Number of learnable Q-Former query tokens.")
+    parser.add_argument('--t5_model', type=str, default='google/flan-t5-xl', help="FLAN-T5 model name.")
+    parser.add_argument('--prompt_text', type=str, default='a video of', help="Prompt prepended on T5 encoder side.")
+
+    # CHANGE: LoRA arguments reused from BLIP2-T5.
+    parser.add_argument('--lora', action='store_true', help="Enable LoRA adapters on FLAN-T5.")
+    parser.add_argument('--lora_r', type=int, default=8, help="LoRA rank.")
+    parser.add_argument('--lora_alpha', type=int, default=16, help="LoRA alpha.")
+    parser.add_argument('--lora_dropout', type=float, default=0.05, help="LoRA dropout.")
+
+    # CHANGE: SCST schedule arguments.
+    parser.add_argument('--scst', action='store_true', help="Enable SCST phase.")
+    parser.add_argument('--scst_start_epoch', type=int, default=50, help="Epoch to start SCST loss.")
+    parser.add_argument('--beam_size', type=int, default=5, help="Beam size for generation/SCST.")
+
     parser.add_argument('--stage_two', action='store_true', help="Whether training with decoder.")
     args = parser.parse_args()
 

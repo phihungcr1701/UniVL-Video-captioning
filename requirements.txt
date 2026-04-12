@@ -3,3 +3,5 @@ tqdm
 boto3
 requests
 pandas
+transformers>=4.25.0
+peft>=0.4.0

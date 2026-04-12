@@ -3,7 +3,17 @@ import os
 
 
 def decode_tokens_to_text(token_ids: List[int], tokenizer: Any) -> str:
-    decode_text_list = tokenizer.convert_ids_to_tokens(token_ids)
+    try:
+        decode_text_list = tokenizer.convert_ids_to_tokens(token_ids)
+    except Exception:
+        # CHANGE: During migration to T5 logits, beam outputs may contain IDs not present
+        # in legacy BERT tokenizer vocab. Map them to [UNK] for stable evaluation flow.
+        decode_text_list = []
+        for token_id in token_ids:
+            try:
+                decode_text_list.extend(tokenizer.convert_ids_to_tokens([token_id]))
+            except Exception:
+                decode_text_list.append("[UNK]")
     
     # Remove special tokens
     if "[SEP]" in decode_text_list:
