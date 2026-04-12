@@ -43,13 +43,9 @@ def init_qformer_backbone(
 	)
 	query_tokens.data.normal_(mean=0.0, std=encoder_config.initializer_range)
 
-	# CHANGE: Keep this BLIP2 pruning behavior to align runtime and memory.
-	qformer.cls = None
-	qformer.bert.embeddings.word_embeddings = None
-	qformer.bert.embeddings.position_embeddings = None
-	for layer in qformer.bert.encoder.layer:
-		layer.output = None
-		layer.intermediate = None
+	# CHANGE: Do NOT apply BLIP2 custom-Qformer pruning here because this module uses
+	# HuggingFace BertLMHeadModel forward path, which still expects BertEmbeddings
+	# internals (including position_embeddings) to exist.
 
 	return QFormerBackbone(qformer, query_tokens)
 
