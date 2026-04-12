@@ -31,7 +31,7 @@ def train_epoch(epoch, args, model, train_dataloader, device, n_gpu, optimizer, 
 
         loss.backward()
 
-        total_loss += float(loss)
+        total_loss += loss.detach().item()
         if (step + 1) % args.gradient_accumulation_steps == 0:
 
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
