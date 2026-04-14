@@ -46,6 +46,10 @@ def get_args(description='UniVL on Caption Task'):
     parser.add_argument('--epochs', type=int, default=20, help='upper epoch limit')
     parser.add_argument('--batch_size', type=int, default=256, help='batch size')
     parser.add_argument('--batch_size_val', type=int, default=3500, help='batch size eval')
+    parser.add_argument('--max_train_batches', type=int, default=-1,
+                        help='For fast debug: max train batches per epoch. -1 uses full dataloader.')
+    parser.add_argument('--max_val_batches', type=int, default=-1,
+                        help='For fast debug: max validation batches per eval. -1 uses full dataloader.')
     parser.add_argument('--lr_decay', type=float, default=0.9, help='Learning rate exp epoch decay')
     parser.add_argument('--n_display', type=int, default=100, help='Information display frequence')
     parser.add_argument('--video_dim', type=int, default=1024, help='video feature dimension')
@@ -158,7 +162,11 @@ def main():
 
     if args.do_train:
         train_dataloader, train_length, train_sampler = DATALOADER_DICT[args.datatype]["train"](args, tokenizer)
-        num_train_optimization_steps = (int(len(train_dataloader) + args.gradient_accumulation_steps - 1)
+        effective_train_batches = len(train_dataloader)
+        if args.max_train_batches > 0:
+            effective_train_batches = min(effective_train_batches, args.max_train_batches)
+
+        num_train_optimization_steps = (int(effective_train_batches + args.gradient_accumulation_steps - 1)
                                         / args.gradient_accumulation_steps) * args.epochs
 
         coef_lr = args.coef_lr
@@ -171,6 +179,10 @@ def main():
             logger.info("  Num examples = %d", train_length)
             logger.info("  Batch size = %d", args.batch_size)
             logger.info("  Num steps = %d", num_train_optimization_steps * args.gradient_accumulation_steps)
+            if args.max_train_batches > 0:
+                logger.info("  Fast debug mode: max_train_batches = %d", args.max_train_batches)
+            if args.max_val_batches > 0:
+                logger.info("  Fast debug mode: max_val_batches = %d", args.max_val_batches)
 
         best_score = 0.00001
         best_output_model_file = None

@@ -103,8 +103,12 @@ def eval_epoch(args, model, test_dataloader, tokenizer, device, n_gpu, logger, n
     all_result_lists = []
     all_caption_lists = []
     total_loss = 0.0
+    processed_val_batches = 0
     model.eval()
-    for batch in test_dataloader:
+    for step, batch in enumerate(test_dataloader):
+        if getattr(args, "max_val_batches", -1) > 0 and step >= args.max_val_batches:
+            break
+
         batch = tuple(t.to(device, non_blocking=True) for t in batch)
 
         input_ids, input_mask, segment_ids, video, video_mask, \
@@ -121,6 +125,7 @@ def eval_epoch(args, model, test_dataloader, tokenizer, device, n_gpu, logger, n
             if n_gpu > 1:
                 loss = loss.mean()
             total_loss += float(loss)
+            processed_val_batches += 1
             
             sequence_output, visual_output = model.get_sequence_visual_output(input_ids, segment_ids, input_mask, video, video_mask)
             n_bm = 5
@@ -171,7 +176,11 @@ def eval_epoch(args, model, test_dataloader, tokenizer, device, n_gpu, logger, n
                 all_caption_lists.append(decode_text)
 
     # Calculate and log average validation loss
-    avg_val_loss = total_loss / len(test_dataloader)
+    if getattr(args, "max_val_batches", -1) > 0:
+        denom = min(len(test_dataloader), args.max_val_batches)
+    else:
+        denom = processed_val_batches
+    avg_val_loss = total_loss / max(1, denom)
     logger.info("  Average Validation Loss: {:.4f}".format(avg_val_loss)) 
     
     complete_results_path = save_complete_results(all_result_lists, test_set, args.output_dir)

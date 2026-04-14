@@ -12,6 +12,9 @@ def train_epoch(epoch, args, model, train_dataloader, device, n_gpu, optimizer, 
     use_scst = getattr(args, "scst", False) and epoch >= getattr(args, "scst_start_epoch", 50)
 
     for step, batch in enumerate(train_dataloader):
+        if getattr(args, "max_train_batches", -1) > 0 and step >= args.max_train_batches:
+            break
+
         batch = tuple(t.to(device=device, non_blocking=True) for t in batch)
 
         input_ids, input_mask, segment_ids, video, video_mask, \
@@ -52,5 +55,9 @@ def train_epoch(epoch, args, model, train_dataloader, device, n_gpu, optimizer, 
                             (time.time() - start_time) / (log_step * args.gradient_accumulation_steps))
                 start_time = time.time()
 
-    total_loss = total_loss / len(train_dataloader)
+    if getattr(args, "max_train_batches", -1) > 0:
+        denom = min(len(train_dataloader), args.max_train_batches)
+    else:
+        denom = len(train_dataloader)
+    total_loss = total_loss / max(1, denom)
     return total_loss, global_step
