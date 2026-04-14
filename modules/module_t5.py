@@ -5,12 +5,12 @@ Reference reuse:
 - mllm-video-captioner/lavis/models/blip2_models/blip2_t5.py
 """
 
-import itertools
 import logging
 
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from peft import LoraConfig, TaskType, get_peft_model
 from transformers import T5Config, T5ForConditionalGeneration, T5TokenizerFast
 
@@ -128,43 +128,96 @@ class T5Model(nn.Module):
 		)
 
 	def compute_scst_loss(self, inputs_embeds, attention_mask, references, device, beam_size=None):
-		beam_size = beam_size if beam_size is not None else self.beam_size
-		batch_size = inputs_embeds.size(0)
-
-		outputs = self.generate(
+		_ = beam_size
+		max_new_tokens = self.max_txt_len
+		sampled_ids, sampled_logprob_sum, sampled_lengths = self._sample_with_logprobs(
 			inputs_embeds=inputs_embeds,
 			attention_mask=attention_mask,
-			num_beams=beam_size,
-			max_length=32,
-			num_return_sequences=beam_size,
-			output_scores=True,
-			return_dict_in_generate=True,
+			max_new_tokens=max_new_tokens,
 		)
 
-		transition_scores = self.t5_model.compute_transition_scores(
-			outputs.sequences,
-			outputs.scores,
-			outputs.beam_indices,
-			normalize_logits=False,
+		with torch.no_grad():
+			greedy_ids = self.t5_model.generate(
+				inputs_embeds=inputs_embeds,
+				attention_mask=attention_mask,
+				do_sample=False,
+				num_beams=1,
+				max_new_tokens=max_new_tokens,
+			)
+
+		sampled_text = self.t5_tokenizer.batch_decode(sampled_ids, skip_special_tokens=True)
+		sampled_text = [text.strip() for text in sampled_text]
+		greedy_text = self.t5_tokenizer.batch_decode(greedy_ids, skip_special_tokens=True)
+		greedy_text = [text.strip() for text in greedy_text]
+
+		reward_sample = self._compute_reward(references, sampled_text, device)
+		reward_greedy = self._compute_reward(references, greedy_text, device)
+		advantage = (reward_sample - reward_greedy).detach()
+
+		normalized_logprob = sampled_logprob_sum / sampled_lengths.clamp(min=1.0)
+		loss = -(advantage * normalized_logprob).mean()
+		return loss
+
+	def _compute_reward(self, references, candidates, device):
+		if HAS_COCO_EVAL:
+			refs = [[ref] for ref in references]
+			refs_tok, cands_tok = _tokenize_for_cider(refs, candidates)
+			scores = Cider().compute_score(refs_tok, cands_tok)[1].astype(np.float32)
+			return torch.from_numpy(scores).to(device)
+
+		logger.warning("pycocoevalcap not found; using exact-match reward for SCST.")
+		scores = []
+		for ref, cand in zip(references, candidates):
+			scores.append(float(ref.strip().lower() == cand.strip().lower()))
+		return torch.tensor(scores, device=device, dtype=torch.float32)
+
+	def _sample_with_logprobs(self, inputs_embeds, attention_mask, max_new_tokens):
+		batch_size = inputs_embeds.size(0)
+		device = inputs_embeds.device
+		start_token_id = self.t5_model.config.decoder_start_token_id
+		eos_token_id = self.t5_model.config.eos_token_id
+
+		if start_token_id is None:
+			start_token_id = self.t5_tokenizer.pad_token_id
+		if eos_token_id is None:
+			eos_token_id = self.t5_tokenizer.eos_token_id
+
+		decoder_input_ids = torch.full(
+			(batch_size, 1),
+			start_token_id,
+			dtype=torch.long,
+			device=device,
 		)
-		output_length = torch.sum(transition_scores < 0, dim=1)
-		sequences_scores = transition_scores.sum(dim=1) / (output_length ** 1.0)
-		sequences_scores = sequences_scores.view(batch_size, -1)
+		unfinished = torch.ones(batch_size, dtype=torch.bool, device=device)
+		logprob_sum = torch.zeros(batch_size, device=device)
+		lengths = torch.zeros(batch_size, device=device)
 
-		if not HAS_COCO_EVAL:
-			# CHANGE: fallback when pycocoevalcap is unavailable.
-			logger.warning("pycocoevalcap not found; SCST fallback reward uses score mean baseline.")
-			reward = sequences_scores.detach()
-			reward_baseline = reward.mean(dim=-1, keepdim=True)
-			return (-(sequences_scores) * (reward - reward_baseline)).mean()
+		for _ in range(max_new_tokens):
+			outputs = self.t5_model(
+				inputs_embeds=inputs_embeds,
+				attention_mask=attention_mask,
+				decoder_input_ids=decoder_input_ids,
+				return_dict=True,
+			)
+			next_token_logits = outputs.logits[:, -1, :].float()
+			log_probs = F.log_softmax(next_token_logits, dim=-1)
+			probs = log_probs.exp()
+			sampled_token = torch.multinomial(probs, num_samples=1)
 
-		caps_gen = self.t5_tokenizer.batch_decode(outputs.sequences, skip_special_tokens=True)
-		caps_gen = [text.strip() for text in caps_gen]
-		caps_gt = list(itertools.chain(*([c] * beam_size for c in references)))
-		caps_gt = [[c] for c in caps_gt]
+			token_logprob = log_probs.gather(1, sampled_token).squeeze(1)
+			active = unfinished.float()
+			logprob_sum = logprob_sum + token_logprob * active
+			lengths = lengths + active
 
-		caps_gen, caps_gt = _tokenize_for_cider(caps_gt, caps_gen)
-		reward = Cider().compute_score(caps_gt, caps_gen)[1].astype(np.float32)
-		reward = torch.from_numpy(reward).to(device).view(batch_size, beam_size)
-		reward_baseline = torch.mean(reward, -1, keepdim=True)
-		return (-(sequences_scores) * (reward - reward_baseline)).mean()
+			next_token = sampled_token.squeeze(1)
+			next_token = torch.where(
+				unfinished,
+				next_token,
+				torch.full_like(next_token, eos_token_id),
+			)
+			decoder_input_ids = torch.cat([decoder_input_ids, next_token.unsqueeze(1)], dim=1)
+			unfinished = unfinished & (next_token != eos_token_id)
+			if not unfinished.any():
+				break
+
+		return decoder_input_ids, logprob_sum, lengths
