@@ -6,6 +6,7 @@ from __future__ import print_function
 import torch
 import os
 import argparse
+from datetime import timedelta
 
 from metrics import CaptionEvaluator, PYCOCOEVALCAP_AVAILABLE
 from modules.tokenization import BertTokenizer
@@ -19,7 +20,12 @@ from inference.caption_generator import eval_epoch
 
 # Initialize distributed training only if environment is properly configured
 if not torch.distributed.is_initialized():
-    torch.distributed.init_process_group(backend="nccl")
+    # CHANGE: rank0 runs per-epoch evaluation while other ranks wait at barrier.
+    # Default PG timeout (10 min) is too short for validation on MSRVTT.
+    torch.distributed.init_process_group(
+        backend="nccl",
+        timeout=timedelta(hours=2),
+    )
 
 
 def get_args(description='UniVL on Caption Task'):
