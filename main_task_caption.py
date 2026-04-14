@@ -187,6 +187,12 @@ def main():
                 else:
                     logger.warning("Skip the evaluation after {}-th epoch.".format(epoch+1))
 
+            # CHANGE: Keep all DDP ranks in sync when only rank0 runs evaluation.
+            # Without this barrier, non-zero ranks may enter the next epoch early
+            # and trigger NCCL collective timeout.
+            if torch.distributed.is_initialized():
+                torch.distributed.barrier()
+
         if args.local_rank == 0:
             model = load_model(-1, args, n_gpu, device, logger, model_file=best_output_model_file)
             Bleu_4, _ = eval_epoch(args, model, test_dataloader, tokenizer, device, n_gpu, logger, nlgEvalObj=nlgEvalObj)
